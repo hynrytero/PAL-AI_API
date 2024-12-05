@@ -96,6 +96,82 @@ function runYOLOPrediction(imageBuffer) {
     });
 }
 
+// Scan endpoint
+app.post("/scan", async (req, res) => {
+    const pool = new sql.ConnectionPool(sqlConfig);
+    
+    try {
+        // Validate incoming data
+        const {user_profile_id, disease_prediction, disease_prediction_score } = req.body;
+        
+        if (!user_profile_id || !disease_prediction || !disease_prediction_score) {
+            return res.status(400).json({ message: "Missing required fields" });
+        }
+
+        // Connect to database
+        await pool.connect();
+        
+        // Begin transaction
+        const transaction = new sql.Transaction(pool);
+        await transaction.begin();
+
+        try {
+            // Insert into rice_leaf_scan and get the generated ID
+            const leafScanResult = await pool.request()
+                .input('user_profile_id', sql.VarChar, user_profile_id)
+                .input('disease_prediction', sql.VarChar, disease_prediction)
+                .input('disease_prediction_score', sql.Float, disease_prediction_score)
+                .query(`
+                    INSERT INTO rice_leaf_scan (
+                        user_profile_id,
+                        disease_prediction,
+                        disease_prediction_score
+                    ) 
+                    VALUES (
+                        @user_profile_id,
+                        @disease_prediction,
+                        @disease_prediction_score
+                    );
+                    SELECT SCOPE_IDENTITY() as rice_leaf_scan_id;
+                `);
+
+            const rice_leaf_scan_id = leafScanResult.recordset[0].rice_leaf_scan_id;
+
+            // Insert into scan_history using the obtained rice_leaf_scan_id
+            await pool.request()
+                .input('rice_leaf_scan_id', sql.Int, rice_leaf_scan_id)
+                .query(`
+                    INSERT INTO scan_history (
+                        rice_leaf_scan_id
+                    ) VALUES (
+                        @rice_leaf_scan_id 
+                    )
+                `);
+
+            // Commit transaction
+            await transaction.commit();
+            res.status(201).json({ 
+                message: "Scan data saved successfully",
+                rice_leaf_scan_id: rice_leaf_scan_id
+            });
+
+        } catch (error) {
+            // Rollback transaction if error occurs
+            await transaction.rollback();
+            throw error;
+        }
+
+    } catch (err) {
+        console.error('Detailed error:', err);
+        res.status(500).json({ 
+            message: "Server error during scan data saving",
+            error: err.message
+        });
+    } finally {
+        pool.close();
+    }
+});
+
 //predict endpoint
 app.post("/predict", async (req, res) => {
     try {
@@ -240,7 +316,7 @@ app.post("/login", async (req, res) => {
         res.json({ 
             message: "Login successful", 
             user: { 
-                id: user.id, 
+                id: user.user_id, 
                 username: user.username 
             } 
         });
